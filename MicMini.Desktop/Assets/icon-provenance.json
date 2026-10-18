@@ -1,0 +1,33 @@
+{
+  "source_apk": "1790237230756-DJI-Mimo-store-official-release-10001997_sec.apk",
+  "source_apk_sha256": "877cce18fb21cbdb6e025965e7eab4b06d823675428f61b14f641b719454c2a2",
+  "binary_android_manifest_sha256": "0906d1bc64bb4947c5c9da2f3f602051a4966e470f3e40c28bb069e43ec4e0d2",
+  "manifest_application_icon": "@mipmap/ic_launcher_new",
+  "manifest_application_round_icon": "@drawable/ic_launcher_round",
+  "selected_resource": "@drawable/ic_launcher_round (xxxhdpi)",
+  "decoded_resource_path": "analysis/extracted/resources-decoded/res/drawable-xxxhdpi/ic_launcher_round.png",
+  "apk_entry": "res/kQ-.png",
+  "source_size": [
+    384,
+    384
+  ],
+  "source_png_sha256": "7d09f3e553695c8be9ab0046777c2e9406f0d83443279ac42bc69ebaae1dbf73",
+  "windows_ico": "dji-mimo.ico",
+  "windows_ico_sha256": "0b1edb8d14f5adfdd09573632bd99e78cb3b9ecaab394f8dd0189680671b7439",
+  "windows_ico_sizes": [
+    16,
+    20,
+    24,
+    32,
+    40,
+    48,
+    64,
+    96,
+    128,
+    256
+  ],
+  "sidebar_png": "dji-mimo-official-round.png",
+  "sidebar_png_sha256": "7d09f3e553695c8be9ab0046777c2e9406f0d83443279ac42bc69ebaae1dbf73",
+  "conversion": "Original PNG bytes retained; RGBA conversion and Lanczos resampling into ICO frames only. No redrawing, recoloring, cropping, or AI generation.",
+  "tool": "Pillow 12.3.0"
+}

@@ -1,0 +1,192 @@
+using System.Diagnostics;
+using System.Text.Json;
+using System.Windows.Threading;
+using MicMini.Desktop.Services;
+
+namespace MicMini.Desktop;
+
+public sealed class AppController : IAsyncDisposable
+{
+    private readonly MainWindow window;
+    private readonly MicDeviceService device = new();
+    private readonly AudioCapture audio = new();
+    private readonly DispatcherTimer timer;
+    private readonly Queue<string> logs = new();
+    private readonly SemaphoreSlim operations = new(1, 1);
+    private readonly string dataDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MicMiniDesktop");
+    private readonly string recordingDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyMusic), "Mic Mini Recordings");
+    private string connectionTitle = "正在检测 DJI Mic Mini";
+    private string connectionDetail = "连接接收端后，读取设备信息并打开 USB 音频输入。";
+    private string audioStatus = "正在检测 USB 音频输入";
+    private bool busy, disposed;
+    private AudioInputDevice? selectedAudio;
+    private IReadOnlyList<HidDeviceInfo> hidDevices = [];
+    private IReadOnlyList<AudioInputDevice> audioDevices = [];
+    private IReadOnlyList<WinUsbDeviceInfo> parameterInterfaces = [];
+    private string parameterDiagnostic = "尚未检测参数接口";
+    private static readonly string[] Toggle = ["关闭", "开启"];
+
+    public AppController(MainWindow window)
+    {
+        this.window = window;
+        device.Log += WriteLog;
+        device.Disconnected += error => window.Dispatcher.BeginInvoke(async () =>
+        {
+            WriteLog("设备信息通道断开：" + error);
+            await device.DisposeAsync();
+            connectionTitle = "设备信息连接已断开";
+            connectionDetail = "请检查 USB 连接后点击刷新。音频通道独立运行。";
+            Render();
+        });
+        audio.Error += error => window.Dispatcher.BeginInvoke(() =>
+        {
+            audioStatus = "音频错误：" + error; WriteLog(audioStatus); Render();
+        });
+        window.ConnectRequested += async () => await RefreshAsync();
+        window.RefreshRequested += async () => await RefreshAsync();
+        window.DisconnectRequested += async () =>
+        {
+            await operations.WaitAsync();
+            try
+            {
+                await device.DisposeAsync(); connectionTitle = "设备信息连接已断开";
+                connectionDetail = "USB 音频仍可使用。点击连接可重新读取接收端与发射端信息。";
+                WriteLog("已断开信息通道。"); Render();
+            }
+            finally { operations.Release(); }
+        };
+        window.StartRecordingRequested += () =>
+        {
+            try { WriteLog("开始电脑录音：" + audio.StartRecording(recordingDirectory)); }
+            catch (Exception ex) { WriteLog("无法录音：" + ex.Message); }
+            Render();
+        };
+        window.StopRecordingRequested += () =>
+        {
+            try { audio.StopRecording(); WriteLog("录音已保存：" + audio.RecordingPath); }
+            catch (Exception ex) { WriteLog("保存录音失败：" + ex.Message); }
+            Render();
+        };
+        window.OpenRecordingsRequested += () =>
+        {
+            Directory.CreateDirectory(recordingDirectory);
+            Process.Start(new ProcessStartInfo(recordingDirectory) { UseShellExecute = true });
+        };
+        window.ExportDiagnosticsRequested += ExportDiagnostics;
+        window.SettingRequested += (key, _) => WriteLog($"{key}：当前设备参数通道尚未验证，未发送设置命令。");
+        timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
+        timer.Tick += (_, _) => Render(); timer.Start();
+        Render();
+    }
+
+    public Task InitializeAsync() => RefreshAsync();
+
+    public async Task RefreshAsync()
+    {
+        if (!await operations.WaitAsync(0)) return;
+        busy = true; Render();
+        try
+        {
+            hidDevices = await Task.Run(HidTransport.Enumerate);
+            audioDevices = await Task.Run(AudioCapture.EnumerateDevices);
+            try
+            {
+                parameterInterfaces = await Task.Run(WinUsbTransport.Enumerate);
+                parameterDiagnostic = parameterInterfaces.Count > 0 ? "WinUSB 参数接口已就绪，待实机协议验证" : "未发现 MI_06 参数接口";
+            }
+            catch (IOException ex) { parameterInterfaces = []; parameterDiagnostic = ex.Message; }
+            WriteLog(parameterDiagnostic);
+            var candidates = audioDevices.Where(x => x.Name.Contains("Wireless Mic Rx", StringComparison.OrdinalIgnoreCase) || x.Name.Contains("DJI Mic", StringComparison.OrdinalIgnoreCase)).ToArray();
+            if (!audio.IsMonitoring)
+            {
+                if (candidates.Length == 1)
+                {
+                    selectedAudio = candidates[0];
+                    try
+                    {
+                        await Task.Run(() => audio.StartMonitor(selectedAudio.Id));
+                        audioStatus = $"{selectedAudio.Name} · {audio.SampleRate / 1000.0:0.#} kHz / {audio.Channels} 声道 / PCM 16-bit";
+                        WriteLog("USB 音频已打开：" + audioStatus);
+                    }
+                    catch (Exception ex) { audioStatus = "无法打开 USB 音频：" + ex.Message; WriteLog(audioStatus); }
+                }
+                else audioStatus = candidates.Length == 0 ? "未检测到 DJI USB 音频输入。" : "检测到多个 DJI 音频输入，请只保留目标接收端。";
+            }
+            try
+            {
+                await device.ConnectAndReadAsync();
+                connectionTitle = "DJI Mic Mini 已连接";
+                connectionDetail = parameterInterfaces.Count > 0
+                    ? "固件与 TX 信息已读取；WinUSB 参数接口已识别，声音设置待完成实机协议验证。"
+                    : "固件与 TX 信息已读取；MI_06 参数接口尚未就绪，请完成 WinUSB 驱动安装。";
+            }
+            catch (Exception ex)
+            {
+                connectionTitle = "设备信息连接未完成";
+                connectionDetail = ex.Message; WriteLog(ex.Message);
+            }
+        }
+        catch (Exception ex) { connectionDetail = ex.Message; WriteLog("检测失败：" + ex.Message); }
+        finally { busy = false; operations.Release(); Render(); }
+    }
+
+    private IReadOnlyList<SettingItem> Settings()
+    {
+        const string pending = "待接通参数通道并完成设备回读";
+        return [
+            new("noise_reduction", "降噪", "减弱环境噪声，保留清晰人声。", ["关闭", "弱", "强"], null, false, pending),
+            new("channel_mode", "声道模式", "单声道混音，或为两个发射端保留独立声道。", ["单声道", "立体声"], null, false, pending),
+            new("safety_track", "安全音轨", "单声道模式下保留较低电平的备份音轨。", Toggle, null, false, pending),
+            new("low_cut", "低切", "减少低频风噪与环境震动。", Toggle, null, false, pending),
+            new("limiter", "自动防爆音", "抑制突发大音量引起的失真。", Toggle, null, false, pending),
+            new("tx_led", "发射端指示灯", "控制发射端的状态指示灯。", Toggle, null, false, pending),
+            new("power_button_denoise", "电源键开关降噪", "设置是否允许使用电源键切换降噪。", Toggle, null, false, pending),
+            new("auto_power_off", "超时自动关机", "按设备规则，在未连接时自动关机。", Toggle, null, false, pending),
+            new("camera_power_sync", "跟随相机开关机", "接收端跟随相机的电源状态。", Toggle, null, false, pending)
+        ];
+    }
+
+    private AppSnapshot Snapshot()
+    {
+        var state = device.State;
+        List<DeviceItem> devices = [];
+        if (state is not null)
+        {
+            devices.Add(new("DJI Mic Mini 接收端", "RX", "已响应", "固件 " + state.Firmware + " · USB HID"));
+            devices.AddRange(state.Transmitters.Select((tx, i) => new DeviceItem($"发射端 {i + 1}", "TX", "接收端确认在线", "固件 " + tx.Firmware)));
+        }
+        return new(connectionTitle, connectionDetail, state is not null, audioStatus, audio.IsMonitoring, audio.IsRecording,
+            audio.PeakLeft, audio.PeakRight, audio.RecordedDuration.ToString(@"hh\:mm\:ss"), audio.RecordingPath ?? recordingDirectory,
+            state?.Firmware ?? "未读取", state is null ? "未读取" : state.Device.UsbSerial + "（USB 描述符）",
+            devices, Settings(), logs.ToArray(), busy);
+    }
+    private void Render() { if (!disposed) window.Render(Snapshot()); }
+    private void WriteLog(string text)
+    {
+        if (!window.Dispatcher.CheckAccess()) { window.Dispatcher.BeginInvoke(() => WriteLog(text)); return; }
+        logs.Enqueue($"{DateTime.Now:HH:mm:ss}  {text}"); while (logs.Count > 180) logs.Dequeue();
+    }
+    private void ExportDiagnostics()
+    {
+        try
+        {
+            var folder = Path.Combine(dataDirectory, "Diagnostics"); Directory.CreateDirectory(folder);
+            var path = Path.Combine(folder, $"mic-mini-{DateTime.Now:yyyyMMdd-HHmmss-fff}.json");
+            var data = new { CreatedAt = DateTimeOffset.Now, ApplicationVersion = "0.1.0", Os = Environment.OSVersion.ToString(), Receiver = device.State,
+                HidDevices = hidDevices, AudioDevices = audioDevices, ParameterInterfaces = parameterInterfaces, ParameterDiagnostic = parameterDiagnostic, Snapshot = Snapshot(),
+                Scope = "USB设备信息与电脑录音已接入。设备参数、BLE与固件升级未完成；USB序列号不等于已验证的产品SN。" };
+            File.WriteAllText(path, JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true }));
+            WriteLog("诊断已导出：" + path);
+            Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{path}\"") { UseShellExecute = true });
+        }
+        catch (Exception ex) { WriteLog("导出诊断失败：" + ex.Message); }
+    }
+    public async ValueTask DisposeAsync()
+    {
+        if (disposed) return;
+        disposed = true; timer.Stop();
+        await operations.WaitAsync();
+        try { await device.DisposeAsync(); await Task.Run(audio.Dispose); }
+        finally { operations.Release(); }
+    }
+}

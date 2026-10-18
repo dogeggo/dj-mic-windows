@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../MicMini.Desktop/Services/DjiFirmwareCatalogClient.cs" Link="DjiFirmwareCatalogClient.cs" />
+    <Compile Include="../../MicMini.Desktop/Services/FirmwarePackageInspector.cs" Link="FirmwarePackageInspector.cs" />
+  </ItemGroup>
+</Project>
