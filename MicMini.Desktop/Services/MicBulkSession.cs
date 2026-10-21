@@ -33,6 +33,15 @@ public sealed class MicBulkSession : IAsyncDisposable
     public event Action<string>? Log;
     public event Action? StateChanged;
     public bool IsOpen { get { lock (gate) return !disposed && connected && transport.IsOpen; } }
+    public bool HasConnectedTransmitter
+    {
+        get
+        {
+            lock (gate)
+                return transport.IsOpen && ReceiverIsFreshLocked() && receiver!.ConnectedTransmittersMask is uint mask &&
+                    transmitters.Keys.Any(selector => (selector & mask) == selector && IsFresh(transmitterTimes.GetValueOrDefault(selector)));
+        }
+    }
     public IReadOnlyDictionary<uint, MicV3IdentityState> Identities
     {
         get

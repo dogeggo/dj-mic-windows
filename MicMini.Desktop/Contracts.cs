@@ -8,4 +8,7 @@ public sealed record AppSnapshot(
     string AudioStatus, bool AudioAvailable, bool IsRecording, double PeakLeft, double PeakRight,
     string RecordingTime, string RecordingPath, string Firmware, string Serial,
     IReadOnlyList<DeviceItem> Devices, IReadOnlyList<SettingItem> Settings,
-    IReadOnlyList<string> Logs, bool Busy = false, bool ParametersReady = false);
+    IReadOnlyList<string> Logs, bool Busy = false, bool ParametersReady = false, bool TransmitterConnected = false)
+{
+    public bool CanStartRecording => AudioAvailable && TransmitterConnected && !IsRecording && !Busy;
+}

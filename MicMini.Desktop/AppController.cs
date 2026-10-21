@@ -44,14 +44,21 @@ public sealed partial class AppController : IAsyncDisposable
             {
                 if (bulk is not null) { await bulk.DisposeAsync(); bulk = null; }
                 await device.DisposeAsync(); connectionTitle = "设备调参已断开";
-                connectionDetail = "USB 音频仍可使用。点击连接可重新读取设备参数。";
-                WriteLog("已断开设备调参，电脑录音继续独立运行。"); Render();
+                connectionDetail = "USB 音频电平仍可查看。请重新连接并确认发射端在线后录音。";
+                WriteLog("已断开设备调参，录音暂停使用。"); Render();
             }
             finally { operations.Release(); }
         };
         window.StartRecordingRequested += () =>
         {
-            try { WriteLog("开始电脑录音：" + audio.StartRecording(recordingDirectory)); }
+            try
+            {
+                if (disposed) return;
+                if (busy) throw new InvalidOperationException("正在与设备通信，请稍后开始录音。");
+                if (bulk?.HasConnectedTransmitter != true)
+                    throw new InvalidOperationException("未确认发射端在线，请连接发射端后再录音。");
+                WriteLog("开始电脑录音：" + audio.StartRecording(recordingDirectory));
+            }
             catch (Exception ex) { WriteLog("无法录音：" + ex.Message); }
             Render();
         };
@@ -223,12 +230,22 @@ public sealed partial class AppController : IAsyncDisposable
         return new(title, detail, ready || info is not null, audioStatus, audio.IsMonitoring, audio.IsRecording,
             audio.PeakLeft, audio.PeakRight, audio.RecordedDuration.ToString(@"hh\:mm\:ss"), audio.RecordingPath ?? recordingDirectory,
             identity?.FirmwareVersion ?? info?.Firmware ?? "未读取", identity?.SerialNumber ?? (info is null ? "未读取" : info.Device.UsbSerial + "（USB 描述符）"),
-            devices, Settings(), logs.ToArray(), busy, ready);
+            devices, Settings(), logs.ToArray(), busy, ready, session?.HasConnectedTransmitter == true);
     }
     private void Render()
     {
         if (disposed) return;
         var snapshot = Snapshot();
+        if (snapshot.IsRecording && !snapshot.TransmitterConnected)
+        {
+            try
+            {
+                audio.StopRecording();
+                WriteLog("发射端已断开或在线状态失效，录音已自动停止并保存：" + audio.RecordingPath);
+            }
+            catch (Exception ex) { WriteLog("发射端离线，停止并保存录音失败：" + ex.Message); }
+            snapshot = Snapshot();
+        }
         window.Render(snapshot);
         SnapshotUpdated?.Invoke(snapshot);
     }

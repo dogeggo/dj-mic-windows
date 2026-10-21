@@ -27,6 +27,8 @@ if ($Test) {
     if ($LASTEXITCODE -ne 0) { throw '固件窗口保护测试失败。' }
     & dotnet run --project (Join-Path $projectRoot 'tests/tray-ui-selftest/TrayUiSelfTest.csproj')
     if ($LASTEXITCODE -ne 0) { throw '电量与托盘界面测试失败。' }
+    & dotnet run --project (Join-Path $projectRoot 'tests/recording-ui-selftest/RecordingUiSelfTest.csproj')
+    if ($LASTEXITCODE -ne 0) { throw '发射端连接与录音保护测试失败。' }
 }
 & dotnet publish $projectFile -c Release --self-contained false -o $releasePath --nologo
 if ($LASTEXITCODE -ne 0) { throw '发布失败。' }

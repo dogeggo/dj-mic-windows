@@ -63,13 +63,16 @@ public partial class MainWindow : Window
             SetText(FirmwareText, Readable(state.Firmware));
             SetText(SerialText, Readable(state.Serial));
             SetText(RecordingTimeText, string.IsNullOrWhiteSpace(state.RecordingTime) ? "00:00:00" : state.RecordingTime);
-            SetText(RecordingStateText, state.IsRecording ? "正在录制 · 保存为 WAV" : state.AudioAvailable ? "已就绪，等待开始录音" : "等待可用的 USB 音频输入");
+            SetText(RecordingStateText, state.IsRecording ? "正在录制 · 保存为 WAV"
+                : !state.TransmitterConnected ? "请连接发射端后录音"
+                : !state.AudioAvailable ? "等待可用的 USB 音频输入"
+                : state.Busy ? "正在与设备通信，请稍候…" : "已就绪，等待开始录音");
             RecordingDot.Fill = state.IsRecording ? ColorBrush("#F27D8C") : MutedBrush;
             SetText(RecordingPathText, string.IsNullOrWhiteSpace(state.RecordingPath) ? "文件保存位置将在录音时显示。" : state.RecordingPath);
             RecordingPathText.ToolTip = state.RecordingPath;
             StartRecordingButton.Visibility = state.IsRecording ? Visibility.Collapsed : Visibility.Visible;
             StopRecordingButton.Visibility = state.IsRecording ? Visibility.Visible : Visibility.Collapsed;
-            StartRecordingButton.IsEnabled = state.AudioAvailable && !state.IsRecording && !state.Busy;
+            StartRecordingButton.IsEnabled = state.CanStartRecording;
             StopRecordingButton.IsEnabled = state.IsRecording;
             ConnectButton.Visibility = state.ControlConnected ? Visibility.Collapsed : Visibility.Visible;
             DisconnectButton.Visibility = state.ControlConnected ? Visibility.Visible : Visibility.Collapsed;

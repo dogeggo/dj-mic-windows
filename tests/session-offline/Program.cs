@@ -17,6 +17,7 @@ foreach(var line in File.ReadLines(args.Length > 0 ? args[0] : "analysis/evidenc
 }
 Check(cap.Length>0,"saved capability fixture present");
 await using var session=new MicBulkSession();
+Check(!session.HasConnectedTransmitter,"uninitialized session cannot enable recording");
 var transport=WinUsbTransport.Latest!;
 void Push(byte kind,uint sel,byte[] data)=>transport.Inject(new(0x5a,2,0,0,0x5b,3,Payload(kind,sel,data)));
 void Ack(DumlFrame request, byte code=0)=>transport.Inject(new(request.Receiver,request.Sender,request.Sequence,0x80,request.CommandSet,request.Command,[code]));
@@ -30,6 +31,7 @@ transport.Send= request=>{
 };
 await session.ConnectAndQueryCapabilitiesAsync();
 Check(session.IsOpen&&session.Receiver!=null&&session.Transmitters.ContainsKey(1),"initial live state ready");
+Check(session.HasConnectedTransmitter,"fresh connected TX enables recording");
 Check(session.Identities[1].FirmwareVersion=="02.03.17.00"&&session.Identities[1].DeviceName=="f99fe3"&&session.Identities[1].ProductName=="DJI Mic Mini","identity incremental merge");
 var used=new HashSet<ushort>();
 transport.Send=request=>{
@@ -64,12 +66,16 @@ try{await session.SetValueAsync(1,3,1,()=>true);throw new Exception("negative AC
 transport.Send=request=>{Ack(request);rx[24]=0;Push(3,0,rx);return Task.CompletedTask;};
 try{await session.SetValueAsync(1,3,1,()=>true);throw new Exception("offline target accepted");}catch(IOException){checks++;}
 Check(session.Transmitters.Count==0&&!session.Identities.ContainsKey(1),"offline TX removes cached identity");
+Check(!session.HasConnectedTransmitter,"receiver-only connection cannot enable recording");
+Push(2,1,tx);
+Check(!session.HasConnectedTransmitter,"late offline TX status cannot enable recording");
 var sends=transport.SendCount;
 try{await session.SetValueAsync(1,3,1,()=>true);throw new Exception("offline write dispatched");}catch(IOException){checks++;}
 Check(transport.SendCount==sends,"offline target rejected before I/O");
 Push(1,1,Convert.FromHexString("001103023850445750384b30313531355841"));
 Check(!session.Identities.ContainsKey(1),"late offline identity ignored");
 rx[24]=1;Push(3,0,rx);Push(2,1,tx);
+Check(session.HasConnectedTransmitter,"fresh reconnected TX restores recording availability");
 Check(!session.Identities.ContainsKey(1),"replacement live status cannot reuse old serial");
 Push(1,1,Convert.FromHexString("001103023850445750384b30313531355842"));
 Check(session.Identities[1].SerialNumber=="8PDWP8K01515XB"&&session.Identities[1].ProductName==null,"replacement needs complete new identity");
@@ -80,18 +86,29 @@ Check(session.Identities[1].ProductName==null,"serial change without mask change
 Push(6,1,"DJI Mic Mini"u8.ToArray());
 var times=(Dictionary<uint,long>)typeof(MicBulkSession).GetField("transmitterTimes",BindingFlags.NonPublic|BindingFlags.Instance)!.GetValue(session)!;
 lock(gate) times[1]=System.Diagnostics.Stopwatch.GetTimestamp()-4*System.Diagnostics.Stopwatch.Frequency;
+Check(!session.HasConnectedTransmitter,"expired TX status disables recording before expiry timer");
 Check(!session.Identities.ContainsKey(1),"expired identity hidden before timer fires");
 Push(2,1,tx);
 Check(!session.Identities.ContainsKey(1),"fresh TX status after expiration cannot revive cached serial");
 Push(1,1,Convert.FromHexString("001103023850445750384b30313531355843"));
 typeof(MicBulkSession).GetField("receiverTime",BindingFlags.NonPublic|BindingFlags.Instance)!.SetValue(session,System.Diagnostics.Stopwatch.GetTimestamp()-4*System.Diagnostics.Stopwatch.Frequency);
+Check(!session.HasConnectedTransmitter,"expired RX status disables recording despite fresh TX");
 try{await session.SetValueAsync(0,0x1e,1,()=>true);throw new Exception("stale RX write dispatched");}catch(IOException){checks++;}
 Check(transport.SendCount==sends,"stale target rejected before I/O");
 Check(session.Identities.Count==0,"stale receiver hides identities immediately");
 Push(3,0,rx);Push(2,1,tx);
 Check(session.Identities.Count==0,"fresh receiver after expiry does not revive identities");
+rx[24]=3;Push(3,0,rx);Push(2,2,tx);
+rx[24]=2;Push(3,0,rx);
+Check(session.HasConnectedTransmitter,"remaining online TX keeps recording available after another disconnects");
+rx[24]=0;Push(3,0,rx);
+Check(!session.HasConnectedTransmitter,"last TX disconnect disables recording");
+rx[24]=1;Push(3,0,rx);Push(2,1,tx);
+transport.Disconnect();
+Check(!session.HasConnectedTransmitter,"transport disconnect disables recording immediately");
 await session.DisposeAsync();
 Check(!session.IsOpen&&session.Receiver==null&&session.Transmitters.Count==0&&session.Capabilities==null,"disposed state invalidated");
+Check(!session.HasConnectedTransmitter,"disposed session cannot enable recording");
 Console.WriteLine($"PASS: {checks} assertions; fake WinUSB transport only, no device access.");
 
 namespace MicMini.Desktop.Services {
@@ -104,6 +121,7 @@ namespace MicMini.Desktop.Services {
   public void Open(WinUsbDeviceInfo device){IsOpen=true;}
   public Task SendAsync(ReadOnlyMemory<byte> bytes,CancellationToken token=default){token.ThrowIfCancellationRequested();SendCount++;return Send!(DumlCodec.Decode(bytes.Span));}
   public void Inject(DumlFrame frame)=>DataReceived?.Invoke(DumlCodec.Encode(frame));
+  public void Disconnect(){IsOpen=false;Disconnected?.Invoke("offline test disconnect");}
   public ValueTask DisposeAsync(){IsOpen=false;return ValueTask.CompletedTask;}
  }
 }
